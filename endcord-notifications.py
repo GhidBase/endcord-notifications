@@ -53,8 +53,8 @@ class Extension:
             channel_id = str(meta["id"])
 
             read_state = app.read_state.get(channel_id) or app.read_state.get(meta["id"], {})
-            mention_count = len(read_state.get("mentions", []))
-            count_tag = f" @{mention_count}" if mention_count else ""
+            mention_ids = read_state.get("mentions", [])
+            count_tag = f" @{len(mention_ids)}" if mention_ids else ""
 
             if is_dm:
                 display = f"@ {channel_name}{count_tag}"
@@ -66,6 +66,7 @@ class Extension:
                 "display": display,
                 "channel_id": channel_id,
                 "guild_id": str(guild_id) if guild_id else None,
+                "message_id": str(mention_ids[-1]) if mention_ids else None,
             })
         return results
 
@@ -94,6 +95,7 @@ class Extension:
                 "display": display,
                 "channel_id": ch_id,
                 "guild_id": str(guild_id) if guild_id else None,
+                "message_id": str(m["id"]),
             })
         return results
 
@@ -182,6 +184,8 @@ class Extension:
                     ch_id, ch_name, guild_id, guild_name, parent_id = app.find_parents_from_id(item["channel_id"])
                     if ch_id:
                         app.switch_channel(ch_id, ch_name, guild_id, guild_name, parent_hint=parent_id)
+                        if item.get("message_id"):
+                            app.go_to_message(item["message_id"])
                         app.reset_states(replying=True)
                         app.update_status_line()
                     return
