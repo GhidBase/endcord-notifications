@@ -165,18 +165,18 @@ class Extension:
         filter_mode = _FILTERS[self._filter_idx]
         guild_filter = None
         guild_filter_name = None
-        mentions_unread_only = False
-        items = self._build_list(filter_mode)
+        mentions_unread_only = True
+        items = self._build_list(filter_mode, mentions_unread_only=True)
         selected = 0
         scroll = 0
 
         def draw():
-            unread_tag = "·unread" if (filter_mode == "mentions" and mentions_unread_only) else ""
+            unread_tag = "·all" if (filter_mode == "mentions" and not mentions_unread_only) else ""
             server_tag = f"|{guild_filter_name}" if guild_filter_name else ""
             title = (
                 f" Notifications [{filter_mode}{unread_tag}{server_tag}]"
                 f"  j/k·move  f·filter"
-                + ("  u·unread" if filter_mode == "mentions" else "")
+                + ("  u·all" if filter_mode == "mentions" else "")
                 + "  g·server  Enter·go  Esc·close "
             )
             body = [item["display"] for item in items] or ["(none)"]
