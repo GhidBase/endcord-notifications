@@ -9,15 +9,15 @@ import curses
 import logging
 
 EXT_NAME = "Notifications Viewer"
-EXT_VERSION = "0.6.1"
+EXT_VERSION = "0.6.2"
 EXT_ENDCORD_VERSION = "1.4.2"
-EXT_DESCRIPTION = "Press Q (vim normal mode) to browse mentions. u=all  g=server  Enter=go."
+EXT_DESCRIPTION = "Press gn (vim normal mode) to browse mentions. u=all  g=server  Enter=go."
 EXT_SOURCE = "https://github.com/GhidBase/endcord-notifications"
 
 logger = logging.getLogger(__name__)
 
 _NOTIF_CODE = 1003
-_TRIGGER = ord('Q')
+_TRIGGER = ord('g')
 _MENTIONS_FETCH = 50
 
 
@@ -25,7 +25,7 @@ class Extension:
     def __init__(self, app):
         self.app = app
         self._pending_jump = None   # (channel_id, message_id) set by _run_viewer, consumed by on_wait_input
-        logger.info("Notifications viewer active — press Q in vim normal mode")
+        logger.info("Notifications viewer active — press gn in vim normal mode")
 
     # ── list building ─────────────────────────────────────────────────────────
 
@@ -107,6 +107,8 @@ class Extension:
         if getattr(tui, 'insert_mode', True):
             return
         if key != _TRIGGER:
+            return
+        if tui.screen.getch() != ord('n'):
             return
         self._run_viewer()
         return _NOTIF_CODE
