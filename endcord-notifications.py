@@ -12,16 +12,16 @@ import os
 import time
 
 EXT_NAME = "Notifications Viewer"
-EXT_VERSION = "0.2.0"
+EXT_VERSION = "0.3.0"
 EXT_ENDCORD_VERSION = "1.4.2"
-EXT_DESCRIPTION = "Press B (vim normal mode) to browse channels with mentions, unreads, or notification history."
+EXT_DESCRIPTION = "Press B (vim normal mode) to browse notifications. f=filter  g=server  Enter=go."
 EXT_SOURCE = "https://github.com/GhidBase/endcord-notifications"
 
 logger = logging.getLogger(__name__)
 
 _NOTIF_CODE = 1003
 _TRIGGER = ord('B')
-_FILTERS = ["mentions", "unreads", "dms", "history"]
+_FILTERS = ["mentions", "past_mentions", "unreads", "dms", "history"]
 _HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notification_history.json")
 _HISTORY_MAX = 300     # max entries to keep
 _SCAN_INTERVAL = 8     # seconds between background scans
@@ -31,7 +31,7 @@ class Extension:
     def __init__(self, app):
         self.app = app
         self._filter_idx = 0
-        self._history = _load_history()   # list of {"channel_id": str, "display": str}
+        self._history = _load_history()   # list of {"channel_id", "display", "is_mention", "guild_id"}
         self._last_scan = 0.0
         logger.info("Notifications viewer active — press B in vim normal mode")
 
@@ -66,8 +66,15 @@ class Extension:
             if ch_id in existing:
                 continue
 
+            is_mention = status in (2, 5)
+            guild_id, _parent_id, _guild_name = app.find_parents_from_tree(raw_idx)
             display = self._build_display(raw_idx, code, meta, app)
-            self._history.append({"channel_id": ch_id, "display": display})
+            self._history.append({
+                "channel_id": ch_id,
+                "display": display,
+                "is_mention": is_mention,
+                "guild_id": str(guild_id) if guild_id else None,
+            })
             existing.add(ch_id)
             added = True
 
@@ -78,12 +85,19 @@ class Extension:
 
     # ── list building ─────────────────────────────────────────────────────────
 
-    def _build_list(self, filter_mode):
+    def _build_list(self, filter_mode, guild_filter=None):
+        if filter_mode in ("history", "past_mentions"):
+            results = self._build_history_list(filter_mode)
+        else:
+            results = self._build_live_list(filter_mode)
+
+        if guild_filter is not None:
+            results = [r for r in results if r.get("guild_id") == guild_filter]
+
+        return results
+
+    def _build_live_list(self, filter_mode):
         app = self.app
-
-        if filter_mode == "history":
-            return self._build_history_list()
-
         results = []
         for raw_idx, (code, meta) in enumerate(zip(app.tree_format, app.tree_metadata)):
             if meta is None:
@@ -103,13 +117,15 @@ class Extension:
             if filter_mode == "dms" and (not is_dm or not is_unread):
                 continue
 
+            guild_id, _parent_id, _guild_name = app.find_parents_from_tree(raw_idx)
             results.append({
                 "display": self._build_display(raw_idx, code, meta, app),
                 "channel_id": str(meta["id"]),
+                "guild_id": str(guild_id) if guild_id else None,
             })
         return results
 
-    def _build_history_list(self):
+    def _build_history_list(self, filter_mode):
         app = self.app
 
         # Build a quick status lookup from the current tree
@@ -127,6 +143,8 @@ class Extension:
         results = []
         seen = set()
         for entry in reversed(self._history):   # most recent first
+            if filter_mode == "past_mentions" and not entry.get("is_mention"):
+                continue
             ch_id = entry["channel_id"]
             if ch_id in seen:
                 continue
@@ -143,7 +161,11 @@ class Extension:
                 # Channel not in current tree (read, left server, etc.) — show as plain
                 display = "  " + entry["display"][1:].lstrip()
 
-            results.append({"display": display, "channel_id": ch_id})
+            results.append({
+                "display": display,
+                "channel_id": ch_id,
+                "guild_id": entry.get("guild_id"),
+            })
 
         return results
 
@@ -186,12 +208,15 @@ class Extension:
         app = self.app
         tui = app.tui
         filter_mode = _FILTERS[self._filter_idx]
+        guild_filter = None      # None = all servers
+        guild_filter_name = None
         items = self._build_list(filter_mode)
         selected = 0
         scroll = 0
 
         def draw():
-            title = f" Notifications [{filter_mode}]  j/k·move  f·filter  Enter·go  Esc·close "
+            server_tag = f"|{guild_filter_name}" if guild_filter_name else ""
+            title = f" Notifications [{filter_mode}{server_tag}]  j/k·move  f·filter  g·server  Enter·go  Esc·close "
             body = [item["display"] for item in items] or ["(none)"]
             tui.extra_index = scroll
             tui.extra_selected = selected
@@ -226,9 +251,23 @@ class Extension:
                 elif k in (ord('f'), 9):
                     self._filter_idx = (self._filter_idx + 1) % len(_FILTERS)
                     filter_mode = _FILTERS[self._filter_idx]
+                    guild_filter = None
+                    guild_filter_name = None
                     items = self._build_list(filter_mode)
                     selected = 0
                     scroll = 0
+
+                elif k == ord('g'):
+                    # Build unfiltered list to get all servers for the picker
+                    all_items = self._build_list(filter_mode)
+                    guilds = _guilds_from_items(all_items)
+                    if guilds:
+                        guild_filter, guild_filter_name = self._pick_guild(
+                            tui, guilds, guild_filter, guild_filter_name
+                        )
+                        items = self._build_list(filter_mode, guild_filter)
+                        selected = 0
+                        scroll = 0
 
                 elif k in (10, 13, curses.KEY_ENTER) and items:
                     item = items[selected]
@@ -244,6 +283,65 @@ class Extension:
         finally:
             tui.screen.timeout(200)
             tui.remove_extra_window()
+
+    def _pick_guild(self, tui, guilds, current_gid, current_name):
+        """Guild picker overlay. Returns (guild_id, name) or (None, None) for all servers."""
+        entries = [(None, None)] + guilds   # (None, None) = all servers
+        try:
+            sel = next(i for i, (gid, _) in enumerate(entries) if gid == current_gid)
+        except StopIteration:
+            sel = 0
+        scroll = 0
+
+        def draw():
+            title = " filter by server  j/k·move  Enter·pick  Esc·cancel "
+            body = ["  all servers"] + [f"  {name}" for _, name in guilds]
+            tui.extra_index = scroll
+            tui.extra_selected = sel
+            tui.draw_extra_window(title, body, select=True, reset_scroll=False)
+
+        draw()
+        while True:
+            k = tui.screen.getch()
+
+            if k == 27:
+                return current_gid, current_name
+
+            elif k in (ord('k'), curses.KEY_UP):
+                if sel > 0:
+                    sel -= 1
+                    if scroll > sel:
+                        scroll = sel
+                draw()
+
+            elif k in (ord('j'), curses.KEY_DOWN):
+                if sel < len(entries) - 1:
+                    sel += 1
+                    if tui.win_extra_window:
+                        h = tui.win_extra_window.getmaxyx()[0] - 1
+                        if sel >= scroll + h:
+                            scroll += 1
+                draw()
+
+            elif k in (10, 13, curses.KEY_ENTER):
+                gid, name = entries[sel]
+                return gid, name
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _guilds_from_items(items):
+    """Return sorted list of (guild_id, guild_name) pairs from a list of notification items."""
+    seen = {}
+    for item in items:
+        gid = item.get("guild_id")
+        if gid and gid not in seen:
+            d = item["display"]
+            start = d.find("[")
+            end = d.find("]")
+            name = d[start + 1:end] if 0 <= start < end else gid
+            seen[gid] = name
+    return sorted(seen.items(), key=lambda x: x[1].lower())
 
 
 # ── persistence ───────────────────────────────────────────────────────────────
