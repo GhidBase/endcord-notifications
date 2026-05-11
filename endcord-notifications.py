@@ -24,6 +24,7 @@ _MENTIONS_FETCH = 50
 class Extension:
     def __init__(self, app):
         self.app = app
+        self._pending_jump = None   # (channel_id, message_id) set by _run_viewer, consumed by on_wait_input
         logger.info("Notifications viewer active — press Q in vim normal mode")
 
     # ── list building ─────────────────────────────────────────────────────────
@@ -113,6 +114,11 @@ class Extension:
     def on_wait_input(self, action_code, input_text, chat_sel, tree_sel):
         if action_code == _NOTIF_CODE:
             self.app.restore_input_text = (input_text, "standard")
+            if self._pending_jump:
+                ch_id, msg_id = self._pending_jump
+                self._pending_jump = None
+                if ch_id == self.app.active_channel.get("channel_id") and msg_id:
+                    self.app.go_to_message(msg_id)
             return True
 
     def _run_viewer(self):
@@ -185,7 +191,8 @@ class Extension:
                     if ch_id:
                         app.switch_channel(ch_id, ch_name, guild_id, guild_name, parent_hint=parent_id)
                         if item.get("message_id"):
-                            app.go_to_message(item["message_id"])
+                            app.go_to_message(item["message_id"])   # loads around chunk
+                            self._pending_jump = (ch_id, item["message_id"])   # on_wait_input jumps again after gateway settles
                         app.reset_states(replying=True)
                         app.update_status_line()
                     return
