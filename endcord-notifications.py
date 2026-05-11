@@ -31,8 +31,10 @@ class Extension:
     # ── list building ─────────────────────────────────────────────────────────
 
     def _build_list(self, filter_mode, guild_filter=None, mentions_unread_only=False):
-        if filter_mode == "mentions":
-            results = self._build_mentions_list(unread_only=mentions_unread_only)
+        if filter_mode == "mentions" and mentions_unread_only:
+            results = self._build_live_mentions_list()
+        elif filter_mode == "mentions":
+            results = self._build_mentions_list()
         else:
             results = self._build_unreads_list()
 
@@ -41,7 +43,7 @@ class Extension:
 
         return results
 
-    def _build_mentions_list(self, unread_only=False):
+    def _build_mentions_list(self):
         app = self.app
         try:
             mentions = app.discord.get_mentions(num=_MENTIONS_FETCH)
@@ -51,13 +53,9 @@ class Extension:
         if not mentions:
             return []
 
-        unread_ids = self._unread_channel_ids() if unread_only else None
-
         results = []
         for m in mentions:
             ch_id = str(m["channel_id"])
-            if unread_ids is not None and ch_id not in unread_ids:
-                continue
             _cid, ch_name, guild_id, guild_name, _parent = app.find_parents_from_id(ch_id)
             author = m.get("global_name") or m.get("username") or "?"
             snippet = (m.get("content") or "")[:60].replace("\n", " ")
@@ -68,6 +66,42 @@ class Extension:
             results.append({
                 "display": display,
                 "channel_id": ch_id,
+                "guild_id": str(guild_id) if guild_id else None,
+            })
+        return results
+
+    def _build_live_mentions_list(self):
+        """Currently mentioned channels from the sidebar tree."""
+        app = self.app
+        results = []
+        for raw_idx, (code, meta) in enumerate(zip(app.tree_format, app.tree_metadata)):
+            if meta is None:
+                continue
+            kind = code // 100
+            if kind >= 10 or kind in (0, 1, 2):
+                continue
+            status = (code // 10) % 10
+            if status not in (2, 5):   # mentioned only
+                continue
+
+            guild_id, _parent_id, guild_name = app.find_parents_from_tree(raw_idx)
+            is_dm = meta["type"] in (1, 3)
+            channel_name = meta["name"] or ""
+            channel_id = str(meta["id"])
+
+            read_state = app.read_state.get(channel_id) or app.read_state.get(meta["id"], {})
+            mentions = read_state.get("mentions", [])
+            mention_count = f" @{len(mentions)}" if mentions else ""
+
+            if is_dm:
+                display = f"@ {channel_name}{mention_count}"
+            else:
+                prefix = f"[{guild_name}] " if guild_name else ""
+                display = f"@ {prefix}#{channel_name}{mention_count}"
+
+            results.append({
+                "display": display,
+                "channel_id": channel_id,
                 "guild_id": str(guild_id) if guild_id else None,
             })
         return results
@@ -108,21 +142,6 @@ class Extension:
                 "guild_id": str(guild_id) if guild_id else None,
             })
         return results
-
-    def _unread_channel_ids(self):
-        app = self.app
-        unread = set()
-        if not getattr(app, 'tree_format', None) or not getattr(app, 'tree_metadata', None):
-            return unread
-        for code, meta in zip(app.tree_format, app.tree_metadata):
-            if meta is None:
-                continue
-            kind = code // 100
-            if kind >= 10 or kind in (0, 1, 2):
-                continue
-            if (code // 10) % 10 in (2, 3, 5):
-                unread.add(str(meta["id"]))
-        return unread
 
     # ── viewer ────────────────────────────────────────────────────────────────
 
