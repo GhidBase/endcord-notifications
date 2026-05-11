@@ -9,7 +9,7 @@ import curses
 import logging
 
 EXT_NAME = "Notifications Viewer"
-EXT_VERSION = "0.6.2"
+EXT_VERSION = "0.6.3"
 EXT_ENDCORD_VERSION = "1.4.2"
 EXT_DESCRIPTION = "Press gn (vim normal mode) to browse mentions. u=all  g=server  Enter=go."
 EXT_SOURCE = "https://github.com/GhidBase/endcord-notifications"
@@ -108,7 +108,10 @@ class Extension:
             return
         if key != _TRIGGER:
             return
-        if tui.screen.getch() != ord('n'):
+        tui.screen.timeout(-1)
+        next_key = tui.screen.getch()
+        tui.screen.timeout(200)
+        if next_key != ord('n'):
             return
         self._run_viewer()
         return _NOTIF_CODE
