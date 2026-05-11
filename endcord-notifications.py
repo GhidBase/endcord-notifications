@@ -12,7 +12,7 @@ import os
 import time
 
 EXT_NAME = "Notifications Viewer"
-EXT_VERSION = "0.3.0"
+EXT_VERSION = "0.4.0"
 EXT_ENDCORD_VERSION = "1.4.2"
 EXT_DESCRIPTION = "Press B (vim normal mode) to browse notifications. f=filter  g=server  Enter=go."
 EXT_SOURCE = "https://github.com/GhidBase/endcord-notifications"
@@ -25,13 +25,14 @@ _FILTERS = ["mentions", "past_mentions", "unreads", "dms", "history"]
 _HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notification_history.json")
 _HISTORY_MAX = 300     # max entries to keep
 _SCAN_INTERVAL = 8     # seconds between background scans
+_MENTIONS_FETCH = 50   # how many past mentions to pull from Discord
 
 
 class Extension:
     def __init__(self, app):
         self.app = app
         self._filter_idx = 0
-        self._history = _load_history()   # list of {"channel_id", "display", "is_mention", "guild_id"}
+        self._history = _load_history()   # list of {"channel_id", "display", "guild_id"}
         self._last_scan = 0.0
         logger.info("Notifications viewer active — press B in vim normal mode")
 
@@ -66,13 +67,11 @@ class Extension:
             if ch_id in existing:
                 continue
 
-            is_mention = status in (2, 5)
             guild_id, _parent_id, _guild_name = app.find_parents_from_tree(raw_idx)
             display = self._build_display(raw_idx, code, meta, app)
             self._history.append({
                 "channel_id": ch_id,
                 "display": display,
-                "is_mention": is_mention,
                 "guild_id": str(guild_id) if guild_id else None,
             })
             existing.add(ch_id)
@@ -86,8 +85,10 @@ class Extension:
     # ── list building ─────────────────────────────────────────────────────────
 
     def _build_list(self, filter_mode, guild_filter=None):
-        if filter_mode in ("history", "past_mentions"):
-            results = self._build_history_list(filter_mode)
+        if filter_mode == "past_mentions":
+            results = self._build_mentions_api_list()
+        elif filter_mode == "history":
+            results = self._build_history_list()
         else:
             results = self._build_live_list(filter_mode)
 
@@ -125,7 +126,34 @@ class Extension:
             })
         return results
 
-    def _build_history_list(self, filter_mode):
+    def _build_mentions_api_list(self):
+        app = self.app
+        try:
+            mentions = app.discord.get_mentions(num=_MENTIONS_FETCH)
+        except Exception as e:
+            logger.error(f"notifications: get_mentions failed: {e}")
+            return [{"display": "  (failed to load)", "channel_id": None, "guild_id": None}]
+        if not mentions:
+            return []
+
+        results = []
+        for m in mentions:
+            ch_id = str(m["channel_id"])
+            _cid, ch_name, guild_id, guild_name, _parent = app.find_parents_from_id(ch_id)
+            author = m.get("global_name") or m.get("username") or "?"
+            snippet = (m.get("content") or "")[:60].replace("\n", " ")
+            if guild_name:
+                display = f"@ [{guild_name}] #{ch_name}  {author}: {snippet}"
+            else:
+                display = f"@ {ch_name or ch_id}  {author}: {snippet}"
+            results.append({
+                "display": display,
+                "channel_id": ch_id,
+                "guild_id": str(guild_id) if guild_id else None,
+            })
+        return results
+
+    def _build_history_list(self):
         app = self.app
 
         # Build a quick status lookup from the current tree
@@ -143,8 +171,6 @@ class Extension:
         results = []
         seen = set()
         for entry in reversed(self._history):   # most recent first
-            if filter_mode == "past_mentions" and not entry.get("is_mention"):
-                continue
             ch_id = entry["channel_id"]
             if ch_id in seen:
                 continue
@@ -258,7 +284,6 @@ class Extension:
                     scroll = 0
 
                 elif k == ord('g'):
-                    # Build unfiltered list to get all servers for the picker
                     all_items = self._build_list(filter_mode)
                     guilds = _guilds_from_items(all_items)
                     if guilds:
@@ -271,6 +296,8 @@ class Extension:
 
                 elif k in (10, 13, curses.KEY_ENTER) and items:
                     item = items[selected]
+                    if not item["channel_id"]:
+                        continue
                     tui.remove_extra_window()
                     ch_id, ch_name, guild_id, guild_name, parent_id = app.find_parents_from_id(item["channel_id"])
                     if ch_id:
