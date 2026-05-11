@@ -9,22 +9,22 @@ import curses
 import logging
 
 EXT_NAME = "Notifications Viewer"
-EXT_VERSION = "0.6.0"
+EXT_VERSION = "0.6.1"
 EXT_ENDCORD_VERSION = "1.4.2"
-EXT_DESCRIPTION = "Press B (vim normal mode) to browse mentions. u=all  g=server  Enter=go."
+EXT_DESCRIPTION = "Press Q (vim normal mode) to browse mentions. u=all  g=server  Enter=go."
 EXT_SOURCE = "https://github.com/GhidBase/endcord-notifications"
 
 logger = logging.getLogger(__name__)
 
 _NOTIF_CODE = 1003
-_TRIGGER = ord('B')
+_TRIGGER = ord('Q')
 _MENTIONS_FETCH = 50
 
 
 class Extension:
     def __init__(self, app):
         self.app = app
-        logger.info("Notifications viewer active — press B in vim normal mode")
+        logger.info("Notifications viewer active — press Q in vim normal mode")
 
     # ── list building ─────────────────────────────────────────────────────────
 
